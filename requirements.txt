@@ -2,6 +2,5 @@ fastapi
 uvicorn
 pillow
 numpy
-torch==2.2.0+cpu
--f https://download.pytorch.org/whl/cpu
+torch==2.2.2
 git+https://github.com/openai/CLIP.git
