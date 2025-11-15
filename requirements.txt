@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+torch
+torchvision
+pillow
+ftfy
+regex
+tqdm
+clip-by-openai
