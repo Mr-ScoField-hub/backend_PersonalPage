@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: backend-personal-page
+    runtime: docker
+    plan: starter
+    region: oregon
+    
+    # Build configuration
+    dockerfilePath: ./Dockerfile
+    
+    # Environment variables
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: FRONTEND_ORIGIN
+        value: https://your-frontend-domain.vercel.app
+    
+    # Service configuration
+    healthCheckPath: /health
+    
+    # Auto-deploy on push to main branch
+    autoDeploy: true

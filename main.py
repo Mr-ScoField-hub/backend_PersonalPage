@@ -1,26 +1,41 @@
-from fastapi import FastAPI, UploadFile, Form
+from fastapi import FastAPI, UploadFile, Form, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import os
-import shutil
 import json
+import shutil
+import aiofiles
 import torch
 from PIL import Image
-import clip
+import open_clip
 
 app = FastAPI()
 
-# Allow your frontend and localhost during testing
-origins = [
+# Simple health and readiness endpoints for Fly.io and load checks
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready():
+    # Report ready if model is loaded (startup event ran)
+    ready_state = hasattr(app.state, "model") and app.state.model is not None
+    return {"ready": ready_state}
+
+# Configure CORS using environment variable for the frontend origin
+FRONTEND_ORIGIN = os.environ.get(
+    "FRONTEND_ORIGIN",
     "https://frontend-6zqct85x2-scofields-projects-b3359916.vercel.app",
-    "http://localhost:3000"
-]
+)
+origins = [FRONTEND_ORIGIN, "http://localhost:3000"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True
+    allow_credentials=True,
 )
 
 DATA_DIR = "data"
@@ -35,8 +50,6 @@ if not os.path.exists(captions_file):
     with open(captions_file, "w") as f:
         json.dump({}, f)
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model, preprocess = clip.load("ViT-B/32", device=device)
 
 def get_next_embedding_name():
     existing = [f for f in os.listdir(EMBED_DIR) if f.startswith("embedding_") and f.endswith(".pt")]
@@ -46,23 +59,82 @@ def get_next_embedding_name():
     next_number = max(existing_numbers) + 1
     return f"embedding_{next_number:03d}.pt"
 
+
+@app.on_event("startup")
+def load_model():
+    # Load CLIP model at startup to avoid repeated loads per request
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai')
+    model = model.to(device)
+    model.eval()
+    app.state.model = model
+    app.state.preprocess = preprocess
+    app.state.device = device
+    app.state.tokenizer = open_clip.get_tokenizer('ViT-B-32')
+
+
 @app.post("/upload/")
-async def upload_image(file: UploadFile):
-    file_location = os.path.join(UPLOAD_DIR, file.filename)
-    with open(file_location, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-    return {"status": "success", "filename": file.filename}
+async def upload_image(file: UploadFile = File(...), caption: str | None = Form(None)):
+    # Save uploaded file
+    filename = file.filename
+    file_location = os.path.join(UPLOAD_DIR, filename)
+    async with aiofiles.open(file_location, "wb") as out_file:
+        content = await file.read()
+        await out_file.write(content)
+
+    # Optionally save caption
+    if caption:
+        try:
+            with open(captions_file, "r") as f:
+                captions = json.load(f)
+        except Exception:
+            captions = {}
+        captions[filename] = caption
+        with open(captions_file, "w") as f:
+            json.dump(captions, f, indent=2)
+
+    return {"status": "success", "filename": filename}
+
 
 @app.post("/embed/")
-async def generate_embedding(filename: str = Form(...), caption: str = Form(...)):
-    with open(captions_file, "r") as f:
-        captions = json.load(f)
+async def generate_embedding(
+    caption: str = Form(...),
+    file: UploadFile | None = File(None),
+    filename: str | None = Form(None),
+):
+    # Accept either a previously uploaded filename, or a new file in this request.
+    if file is not None:
+        filename = file.filename
+        file_location = os.path.join(UPLOAD_DIR, filename)
+        async with aiofiles.open(file_location, "wb") as out_file:
+            content = await file.read()
+            await out_file.write(content)
+
+    if not filename:
+        raise HTTPException(status_code=400, detail="No filename or file provided")
+
+    image_path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(image_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+
+    # Save caption
+    try:
+        with open(captions_file, "r") as f:
+            captions = json.load(f)
+    except Exception:
+        captions = {}
     captions[filename] = caption
     with open(captions_file, "w") as f:
         json.dump(captions, f, indent=2)
 
-    image = preprocess(Image.open(os.path.join(UPLOAD_DIR, filename))).unsqueeze(0).to(device)
-    text = clip.tokenize([caption]).to(device)
+    # Run CLIP encode
+    model = app.state.model
+    preprocess = app.state.preprocess
+    device = app.state.device
+    tokenizer = app.state.tokenizer
+
+    image = preprocess(Image.open(image_path)).unsqueeze(0).to(device)
+    text = tokenizer([caption]).to(device)
 
     with torch.no_grad():
         image_embedding = model.encode_image(image)
@@ -78,10 +150,11 @@ async def generate_embedding(filename: str = Form(...), caption: str = Form(...)
 
     matrix = combined.cpu().numpy().tolist()
 
-    return {"filename": filename, "embedding_file": emb_path, "matrix": matrix}
+    return JSONResponse({"filename": filename, "embedding_file": emb_path, "matrix": matrix})
+
 
 # --- ENTRY POINT FOR FLY.IO ---
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
