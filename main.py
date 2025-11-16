@@ -11,7 +11,6 @@ import open_clip
 
 app = FastAPI()
 
-# Simple health and readiness endpoints for Fly.io and load checks
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -19,11 +18,9 @@ async def health():
 
 @app.get("/ready")
 async def ready():
-    # Report ready if model is loaded (startup event ran)
     ready_state = hasattr(app.state, "model") and app.state.model is not None
     return {"ready": ready_state}
 
-# Configure CORS using environment variable for the frontend origin
 FRONTEND_ORIGIN = os.environ.get(
     "FRONTEND_ORIGIN",
     "https://frontend-6zqct85x2-scofields-projects-b3359916.vercel.app",
@@ -62,7 +59,6 @@ def get_next_embedding_name():
 
 @app.on_event("startup")
 def load_model():
-    # Load CLIP model at startup to avoid repeated loads per request
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai')
     model = model.to(device)
@@ -75,14 +71,12 @@ def load_model():
 
 @app.post("/upload/")
 async def upload_image(file: UploadFile = File(...), caption: str | None = Form(None)):
-    # Save uploaded file
     filename = file.filename
     file_location = os.path.join(UPLOAD_DIR, filename)
     async with aiofiles.open(file_location, "wb") as out_file:
         content = await file.read()
         await out_file.write(content)
 
-    # Optionally save caption
     if caption:
         try:
             with open(captions_file, "r") as f:
@@ -102,7 +96,7 @@ async def generate_embedding(
     file: UploadFile | None = File(None),
     filename: str | None = Form(None),
 ):
-    # Accept either a previously uploaded filename, or a new file in this request.
+ 
     if file is not None:
         filename = file.filename
         file_location = os.path.join(UPLOAD_DIR, filename)
@@ -117,7 +111,6 @@ async def generate_embedding(
     if not os.path.exists(image_path):
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
-    # Save caption
     try:
         with open(captions_file, "r") as f:
             captions = json.load(f)
@@ -127,7 +120,6 @@ async def generate_embedding(
     with open(captions_file, "w") as f:
         json.dump(captions, f, indent=2)
 
-    # Run CLIP encode
     model = app.state.model
     preprocess = app.state.preprocess
     device = app.state.device
@@ -153,7 +145,6 @@ async def generate_embedding(
     return JSONResponse({"filename": filename, "embedding_file": emb_path, "matrix": matrix})
 
 
-# --- ENTRY POINT FOR FLY.IO ---
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
