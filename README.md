@@ -1,6 +1,7 @@
 # Multimodal Neural Network: Images and Language
 
 This is a hands-on experiment exploring how a neural network can **connect images and language**. Images and captions are transformed into embeddings that the network can relate, allowing it to perceive and reason across modalities.
+<img width="800" height="470" alt="image" src="https://github.com/user-attachments/assets/3c87ab34-3e46-4f62-bd31-aa8ea3d1e828" />
 
 ## Explore the Project
 
